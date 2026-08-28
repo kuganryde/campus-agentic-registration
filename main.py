@@ -1,7 +1,7 @@
 import os
 import uuid
-from typing import Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Header, status
+from typing import Optional, Dict, Any, Literal
+from fastapi import FastAPI, HTTPException, BackgroundTasks, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 
@@ -29,6 +29,10 @@ class ProspectInboundDTO(BaseModel):
     target_program: str = Field(..., json_schema_extra={"example": "BSc in Computer Science"})
     transcript_text: str = Field(..., json_schema_extra={"example": "GPA: 3.8. Math: A, Physics: A, English: B+"})
 
+class RegistryOverrideDTO(BaseModel):
+    decision: Literal["APPROVE_DIRECT", "APPROVE_ALTERNATIVE", "REJECT"]
+    officer_notes: Optional[str] = "Manual review sign-off"
+
 class StudentOfferResponseDTO(BaseModel):
     accepted: bool = Field(..., description="True if student accepts the offer")
 
@@ -38,6 +42,7 @@ class PaymentWebhookDTO(BaseModel):
     currency: str = "USD"
     payment_status: str = Field(..., json_schema_extra={"example": "COMPLETED"})
     transaction_reference: str
+
 
 @app.post("/api/v1/prospects/inbound", status_code=status.HTTP_202_ACCEPTED)
 async def ingest_prospect_webhook(
@@ -54,6 +59,7 @@ async def ingest_prospect_webhook(
         "transcript_text": payload.transcript_text,
         "is_qualified": None,
         "alternative_program": None,
+        "registry_override_status": None,
         "offer_sent": False,
         "student_accepted": None,
         "registration_fee_paid": False,
@@ -78,6 +84,44 @@ async def ingest_prospect_webhook(
         "status": "EVALUATION_IN_PROGRESS"
     }
 
+
+@app.post("/api/v1/admissions/{prospect_id}/registry-override")
+async def admissions_officer_override(
+    prospect_id: str,
+    payload: RegistryOverrideDTO
+):
+    if prospect_id not in state_store:
+        raise HTTPException(status_code=404, detail="Prospect record not found")
+        
+    current_state = state_store[prospect_id]
+    if current_state.get("current_status") != "AWAITING_REGISTRY_REVIEW":
+        raise HTTPException(status_code=400, detail="Prospect is not currently awaiting registry review")
+
+    if payload.decision == "APPROVE_DIRECT":
+        current_state["is_qualified"] = True
+        current_state["offer_sent"] = True
+        current_state["current_status"] = "OFFER_SENT"
+        current_state["logs"].append(f"[Stage 2 HITL] Registry Officer APPROVED direct entry. Note: {payload.officer_notes}")
+        current_state["logs"].append(f"[Stage 3] Official offer letter PDF emailed to {current_state['student_email']} for {current_state['target_program']}.")
+    elif payload.decision == "APPROVE_ALTERNATIVE":
+        current_state["target_program"] = current_state["alternative_program"] or "Diploma in Information Technology"
+        current_state["is_qualified"] = True
+        current_state["offer_sent"] = True
+        current_state["current_status"] = "OFFER_SENT"
+        current_state["logs"].append(f"[Stage 2 HITL] Registry Officer APPROVED alternative track: {current_state['target_program']}.")
+        current_state["logs"].append(f"[Stage 3] Alternative offer letter PDF emailed to {current_state['student_email']}.")
+    else:
+        current_state["current_status"] = "CLOSED"
+        current_state["logs"].append(f"[Stage 2 HITL] Registry Officer REJECTED application. Process closed.")
+
+    state_store[prospect_id] = current_state
+    return {
+        "prospect_id": prospect_id,
+        "status": current_state["current_status"],
+        "message": f"Registry decision applied: {payload.decision}"
+    }
+
+
 @app.post("/api/v1/admissions/{prospect_id}/offer-response")
 async def student_offer_response_webhook(
     prospect_id: str,
@@ -100,6 +144,7 @@ async def student_offer_response_webhook(
         
     state_store[prospect_id] = current_state
     return {"prospect_id": prospect_id, "status": current_state["current_status"], "message": message}
+
 
 @app.post("/api/v1/finance/webhooks/payment")
 async def finance_payment_webhook(
@@ -132,6 +177,7 @@ async def finance_payment_webhook(
         "prospect_id": prospect_id
     }
 
+
 @app.get("/api/v1/students/{prospect_id}/status")
 async def get_registration_status(prospect_id: str):
     if prospect_id not in state_store:
@@ -142,6 +188,7 @@ async def get_registration_status(prospect_id: str):
         "prospect_id": record["prospect_id"],
         "student_name": record["student_name"],
         "program": record["target_program"],
+        "alternative_program": record.get("alternative_program"),
         "status": record["current_status"],
         "is_qualified": record["is_qualified"],
         "student_id": record["student_id"],

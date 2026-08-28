@@ -20,6 +20,7 @@ class RegistrationState(TypedDict):
     transcript_text: str
     is_qualified: Optional[bool]
     alternative_program: Optional[str]
+    registry_override_status: Optional[str]  # "APPROVED_DIRECT", "APPROVED_ALTERNATIVE", "REJECTED"
     offer_sent: bool
     student_accepted: Optional[bool]
     registration_fee_paid: bool
@@ -28,6 +29,7 @@ class RegistrationState(TypedDict):
     current_status: str
     logs: List[str]
 
+
 def prospect_capture_node(state: RegistrationState) -> RegistrationState:
     log = f"[Stage 1] Prospect captured for {state['student_name']} ({state['target_program']})."
     return {
@@ -35,6 +37,7 @@ def prospect_capture_node(state: RegistrationState) -> RegistrationState:
         "current_status": "PROSPECT_CONFIRMED",
         "logs": state.get("logs", []) + [log]
     }
+
 
 def registry_entry_evaluation_node(state: RegistrationState) -> RegistrationState:
     prompt = f"""
@@ -62,11 +65,11 @@ def registry_entry_evaluation_node(state: RegistrationState) -> RegistrationStat
                 if "ALTERNATIVE:" in line.upper():
                     alt_program = line.split(":", 1)[1].strip()
     except Exception:
-        is_qualified = True
-        alt_program = None
+        is_qualified = False
+        alt_program = "Diploma in Information Technology"
 
-    status = "QUALIFIED" if is_qualified else "ALT_PROGRAM_PENDING"
-    log = f"[Stage 2] Qualification Check: {status} (Alt: {alt_program})."
+    status = "QUALIFIED" if is_qualified else "AWAITING_REGISTRY_REVIEW"
+    log = f"[Stage 2] Qualification Check: {'QUALIFIED' if is_qualified else 'FLAGGED_FOR_REVIEW'} (Proposed Alt: {alt_program})."
     
     return {
         **state,
@@ -76,24 +79,16 @@ def registry_entry_evaluation_node(state: RegistrationState) -> RegistrationStat
         "logs": state.get("logs", []) + [log]
     }
 
-def check_alternative_program_node(state: RegistrationState) -> RegistrationState:
-    log = f"[Stage 2 Fallback] Re-routed applicant to alternative: {state['alternative_program']}."
-    return {
-        **state,
-        "target_program": state["alternative_program"] or "General Foundation Studies",
-        "is_qualified": True,
-        "current_status": "ALT_OFFER_PREPARED",
-        "logs": state.get("logs", []) + [log]
-    }
 
 def send_offer_node(state: RegistrationState) -> RegistrationState:
-    log = f"[Stage 3] Official offer letter PDF emailed to {state['student_email']}."
+    log = f"[Stage 3] Official offer letter PDF emailed to {state['student_email']} for program: {state['target_program']}."
     return {
         **state,
         "offer_sent": True,
         "current_status": "OFFER_SENT",
         "logs": state.get("logs", []) + [log]
     }
+
 
 def student_response_node(state: RegistrationState) -> RegistrationState:
     if state.get("student_accepted"):
@@ -108,6 +103,7 @@ def student_response_node(state: RegistrationState) -> RegistrationState:
         "current_status": status,
         "logs": state.get("logs", []) + [log]
     }
+
 
 def fee_and_id_generation_node(state: RegistrationState) -> RegistrationState:
     if not state.get("registration_fee_paid", False):
@@ -124,6 +120,7 @@ def fee_and_id_generation_node(state: RegistrationState) -> RegistrationState:
         "logs": state.get("logs", []) + [log]
     }
 
+
 def final_sis_sync_node(state: RegistrationState) -> RegistrationState:
     log = f"[Stage 5] Master record successfully synchronized to Core SIS with ID {state['student_id']}."
     return {
@@ -133,24 +130,26 @@ def final_sis_sync_node(state: RegistrationState) -> RegistrationState:
         "logs": state.get("logs", []) + [log]
     }
 
-def route_after_evaluation(state: RegistrationState) -> Literal["send_offer", "check_alternative"]:
-    return "send_offer" if state.get("is_qualified") else "check_alternative"
+
+def route_after_evaluation(state: RegistrationState) -> Literal["send_offer", "__end__"]:
+    return "send_offer" if state.get("is_qualified") else END
+
 
 def route_after_student_response(state: RegistrationState) -> Literal["generate_id", "__end__"]:
     return "generate_id" if state.get("student_accepted") else END
 
+
+# Graph Assembly
 workflow = StateGraph(RegistrationState)
 
 workflow.add_node("prospect_capture", prospect_capture_node)
 workflow.add_node("registry_evaluation", registry_entry_evaluation_node)
-workflow.add_node("check_alternative", check_alternative_program_node)
 workflow.add_node("send_offer", send_offer_node)
 workflow.add_node("student_response", student_response_node)
 workflow.add_node("generate_id", fee_and_id_generation_node)
 workflow.add_node("final_sis_sync", final_sis_sync_node)
 
 workflow.set_entry_point("prospect_capture")
-
 workflow.add_edge("prospect_capture", "registry_evaluation")
 
 workflow.add_conditional_edges(
@@ -158,11 +157,10 @@ workflow.add_conditional_edges(
     route_after_evaluation,
     {
         "send_offer": "send_offer",
-        "check_alternative": "check_alternative"
+        END: END
     }
 )
 
-workflow.add_edge("check_alternative", "send_offer")
 workflow.add_edge("send_offer", "student_response")
 
 workflow.add_conditional_edges(

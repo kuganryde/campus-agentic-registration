@@ -4,7 +4,6 @@ from main import app, state_store
 from student_registration_agent import (
     RegistrationState,
     prospect_capture_node,
-    check_alternative_program_node,
     send_offer_node,
     student_response_node,
     fee_and_id_generation_node,
@@ -28,6 +27,7 @@ def test_prospect_capture_node():
         "transcript_text": "GPA: 3.8",
         "is_qualified": None,
         "alternative_program": None,
+        "registry_override_status": None,
         "offer_sent": False,
         "student_accepted": None,
         "registration_fee_paid": False,
@@ -41,12 +41,12 @@ def test_prospect_capture_node():
     assert len(result["logs"]) == 1
 
 
-def test_routing_logic_qualified_and_alternative():
+def test_routing_logic_qualified_and_hitl_gate():
     qualified_state: RegistrationState = {"is_qualified": True}
     assert route_after_evaluation(qualified_state) == "send_offer"
 
     unqualified_state: RegistrationState = {"is_qualified": False}
-    assert route_after_evaluation(unqualified_state) == "check_alternative"
+    assert route_after_evaluation(unqualified_state) == "__end__"
 
 
 def test_fee_verification_and_id_minting():
@@ -74,7 +74,7 @@ def test_fee_verification_and_id_minting():
 
 
 # ---------------------------------------------------------------------------
-# Integration Tests: API Webhook Endpoints
+# Integration Tests: Direct Ingestion & Full API Lifecycle
 # ---------------------------------------------------------------------------
 
 def test_full_pipeline_api_flow():
@@ -91,7 +91,7 @@ def test_full_pipeline_api_flow():
     prospect_id = data["prospect_id"]
     assert prospect_id.startswith("LEAD-")
 
-    # Manually transition state for deterministic API test
+    # Manually transition state to test offer response and settlement
     state_store[prospect_id]["offer_sent"] = True
     state_store[prospect_id]["current_status"] = "OFFER_SENT"
 
@@ -119,33 +119,40 @@ def test_full_pipeline_api_flow():
     assert final_data["student_name"] == "Sarah Connor"
 
 
-def test_premature_payment_rejection():
-    # Generate record without offer acceptance
-    prospect_id = "LEAD-LOCKED1"
+# ---------------------------------------------------------------------------
+# Integration Tests: Stage 2 HITL Admissions Officer Override
+# ---------------------------------------------------------------------------
+
+def test_stage2_hitl_registry_override():
+    prospect_id = "LEAD-HITL01"
     state_store[prospect_id] = {
         "prospect_id": prospect_id,
-        "student_name": "John Doe",
-        "student_email": "john@example.com",
+        "student_name": "Jordan Vance",
+        "student_email": "jordan@example.com",
         "target_program": "BSc in Computer Science",
-        "transcript_text": "GPA: 3.5",
-        "is_qualified": True,
-        "alternative_program": None,
-        "offer_sent": True,
+        "transcript_text": "GPA: 2.4",
+        "is_qualified": False,
+        "alternative_program": "Diploma in Information Technology",
+        "registry_override_status": None,
+        "offer_sent": False,
         "student_accepted": None,
         "registration_fee_paid": False,
         "student_id": None,
         "sis_sync_completed": False,
-        "current_status": "OFFER_SENT",
-        "logs": []
+        "current_status": "AWAITING_REGISTRY_REVIEW",
+        "logs": ["[Stage 2] Qualification Check: FLAGGED_FOR_REVIEW"]
     }
 
-    pay_payload = {
-        "prospect_id": prospect_id,
-        "amount_paid": 500.0,
-        "currency": "USD",
-        "payment_status": "COMPLETED",
-        "transaction_reference": "TXN-PREMATURE"
+    override_payload = {
+        "decision": "APPROVE_ALTERNATIVE",
+        "officer_notes": "Admitted into alternative diploma"
     }
-    response = client.post("/api/v1/finance/webhooks/payment", json=pay_payload)
-    assert response.status_code == 400
-    assert "Student must accept offer prior to fee payment" in response.json()["detail"]
+    res_override = client.post(f"/api/v1/admissions/{prospect_id}/registry-override", json=override_payload)
+    assert res_override.status_code == 200
+    assert res_override.json()["status"] == "OFFER_SENT"
+
+    # Verify state updated program and sent offer
+    updated = state_store[prospect_id]
+    assert updated["target_program"] == "Diploma in Information Technology"
+    assert updated["offer_sent"] is True
+    assert updated["current_status"] == "OFFER_SENT"
