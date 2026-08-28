@@ -24,10 +24,10 @@ app.add_middleware(
 state_store: Dict[str, RegistrationState] = {}
 
 class ProspectInboundDTO(BaseModel):
-    student_name: str = Field(..., example="Alexander Wright")
-    student_email: EmailStr = Field(..., example="alex.wright@example.com")
-    target_program: str = Field(..., example="BSc in Computer Science")
-    transcript_text: str = Field(..., example="GPA: 3.8. Math: A, Physics: A, English: B+")
+    student_name: str = Field(..., json_schema_extra={"example": "Alexander Wright"})
+    student_email: EmailStr = Field(..., json_schema_extra={"example": "alex.wright@example.com"})
+    target_program: str = Field(..., json_schema_extra={"example": "BSc in Computer Science"})
+    transcript_text: str = Field(..., json_schema_extra={"example": "GPA: 3.8. Math: A, Physics: A, English: B+"})
 
 class StudentOfferResponseDTO(BaseModel):
     accepted: bool = Field(..., description="True if student accepts the offer")
@@ -36,7 +36,7 @@ class PaymentWebhookDTO(BaseModel):
     prospect_id: str
     amount_paid: float
     currency: str = "USD"
-    payment_status: str = Field(..., example="COMPLETED")
+    payment_status: str = Field(..., json_schema_extra={"example": "COMPLETED"})
     transaction_reference: str
 
 @app.post("/api/v1/prospects/inbound", status_code=status.HTTP_202_ACCEPTED)

@@ -4,16 +4,14 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Configure Gemini Model
+api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "mock_test_key_for_ci_runner"
+
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
     temperature=0.0,
-    api_key=os.environ.get("GEMINI_API_KEY")
+    api_key=api_key
 )
 
-# ---------------------------------------------------------------------------
-# 1. State Definition
-# ---------------------------------------------------------------------------
 class RegistrationState(TypedDict):
     prospect_id: str
     student_name: str
@@ -30,13 +28,7 @@ class RegistrationState(TypedDict):
     current_status: str
     logs: List[str]
 
-
-# ---------------------------------------------------------------------------
-# 2. Node Functions (Discrete 5-Stage Tasks)
-# ---------------------------------------------------------------------------
-
 def prospect_capture_node(state: RegistrationState) -> RegistrationState:
-    """Stage 1: Ingests prospect and creates buffer state."""
     log = f"[Stage 1] Prospect captured for {state['student_name']} ({state['target_program']})."
     return {
         **state,
@@ -44,9 +36,7 @@ def prospect_capture_node(state: RegistrationState) -> RegistrationState:
         "logs": state.get("logs", []) + [log]
     }
 
-
 def registry_entry_evaluation_node(state: RegistrationState) -> RegistrationState:
-    """Stage 2: Multimodal/LLM prerequisite evaluation against target program."""
     prompt = f"""
     You are an academic registry admissions officer.
     Evaluate if this student meets entry criteria for: {state['target_program']}.
@@ -71,7 +61,7 @@ def registry_entry_evaluation_node(state: RegistrationState) -> RegistrationStat
             for line in response.splitlines():
                 if "ALTERNATIVE:" in line.upper():
                     alt_program = line.split(":", 1)[1].strip()
-    except Exception as e:
+    except Exception:
         is_qualified = True
         alt_program = None
 
@@ -86,9 +76,7 @@ def registry_entry_evaluation_node(state: RegistrationState) -> RegistrationStat
         "logs": state.get("logs", []) + [log]
     }
 
-
 def check_alternative_program_node(state: RegistrationState) -> RegistrationState:
-    """Stage 2 Fallback: Routes non-qualified applicants to alternative options."""
     log = f"[Stage 2 Fallback] Re-routed applicant to alternative: {state['alternative_program']}."
     return {
         **state,
@@ -98,9 +86,7 @@ def check_alternative_program_node(state: RegistrationState) -> RegistrationStat
         "logs": state.get("logs", []) + [log]
     }
 
-
 def send_offer_node(state: RegistrationState) -> RegistrationState:
-    """Stage 3a: Generates PDF offer letter and dispatches via email."""
     log = f"[Stage 3] Official offer letter PDF emailed to {state['student_email']}."
     return {
         **state,
@@ -109,9 +95,7 @@ def send_offer_node(state: RegistrationState) -> RegistrationState:
         "logs": state.get("logs", []) + [log]
     }
 
-
 def student_response_node(state: RegistrationState) -> RegistrationState:
-    """Stage 3b: Captures student portal acceptance/rejection."""
     if state.get("student_accepted"):
         status = "OFFER_ACCEPTED"
         log = f"[Stage 3] Student accepted the admission offer."
@@ -125,9 +109,7 @@ def student_response_node(state: RegistrationState) -> RegistrationState:
         "logs": state.get("logs", []) + [log]
     }
 
-
 def fee_and_id_generation_node(state: RegistrationState) -> RegistrationState:
-    """Stage 4: Verifies registration fee and generates official Student ID."""
     if not state.get("registration_fee_paid", False):
         log = f"[Stage 4] Fee verification pending. Cannot generate Student ID."
         return {**state, "current_status": "FEE_PENDING", "logs": state.get("logs", []) + [log]}
@@ -142,9 +124,7 @@ def fee_and_id_generation_node(state: RegistrationState) -> RegistrationState:
         "logs": state.get("logs", []) + [log]
     }
 
-
 def final_sis_sync_node(state: RegistrationState) -> RegistrationState:
-    """Stage 5: Final transactional write-back to the core SIS database."""
     log = f"[Stage 5] Master record successfully synchronized to Core SIS with ID {state['student_id']}."
     return {
         **state,
@@ -153,21 +133,11 @@ def final_sis_sync_node(state: RegistrationState) -> RegistrationState:
         "logs": state.get("logs", []) + [log]
     }
 
-
-# ---------------------------------------------------------------------------
-# 3. Conditional Routing Logic
-# ---------------------------------------------------------------------------
-
 def route_after_evaluation(state: RegistrationState) -> Literal["send_offer", "check_alternative"]:
     return "send_offer" if state.get("is_qualified") else "check_alternative"
 
 def route_after_student_response(state: RegistrationState) -> Literal["generate_id", "__end__"]:
     return "generate_id" if state.get("student_accepted") else END
-
-
-# ---------------------------------------------------------------------------
-# 4. Graph Construction & Assembly
-# ---------------------------------------------------------------------------
 
 workflow = StateGraph(RegistrationState)
 

@@ -1,0 +1,65 @@
+name: CI/CD Pipeline - Automated Testing & Deployment
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Stage 1: Automated Linting & Pytest Test Suite
+  # ---------------------------------------------------------------------------
+  test-and-lint:
+    name: Run Python Tests & Flake8 Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx flake8
+
+      - name: Lint Code
+        run: |
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Run Pytest Test Suite
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'mock_test_key' }}
+        run: |
+          pytest -v tests/
+
+  # ---------------------------------------------------------------------------
+  # Stage 2: Deploy to VPS (Only on Main Branch Push after Tests Pass)
+  # ---------------------------------------------------------------------------
+  deploy-vps:
+    name: Deploy to Production VPS
+    needs: test-and-lint
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: SSH and Restart Containers
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script: |
+            set -e
+            cd /opt/campus-agent
+            git pull origin main
+            docker compose down
+            docker compose up -d --build
+            docker image prune -f
