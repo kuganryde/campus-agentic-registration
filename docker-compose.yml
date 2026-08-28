@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. FastAPI + LangGraph Agent Application
+  # ---------------------------------------------------------------------------
+  campus-agent-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: campus_agent_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DATABASE_URL=postgresql://campus_user:campus_password@postgres:5432/campus_sis_db
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - campus_net
+
+  # ---------------------------------------------------------------------------
+  # 2. PostgreSQL (Relational Master & State Store)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: campus_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: campus_user
+      POSTGRES_PASSWORD: campus_password
+      POSTGRES_DB: campus_sis_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U campus_user -d campus_sis_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - campus_net
+
+  # ---------------------------------------------------------------------------
+  # 3. Redis (Cache, Lock, & Outbox Queue)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: campus_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - campus_net
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  campus_net:
+    driver: bridge

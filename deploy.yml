@@ -1,0 +1,52 @@
+name: CI/CD Pipeline - Build & Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  # Stage 1: Continuous Integration (Linting & Verification)
+  ci-test:
+    name: Run Python Lint & Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8
+
+      - name: Run Syntax & Lint Checks
+        run: |
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+  # Stage 2: Continuous Deployment via SSH
+  cd-deploy:
+    name: Deploy to Remote VPS
+    needs: ci-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: SSH and Restart Containers
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script: |
+            set -e
+            cd /opt/campus-agent
+            git pull origin main
+            docker compose down
+            docker compose up -d --build
+            docker image prune -f
