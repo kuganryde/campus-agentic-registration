@@ -1,11 +1,10 @@
 import os
 import uuid
 from typing import Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Header, Depends, status
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Header, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 
-# Import the LangGraph workflow compiled in the previous step
 from student_registration_agent import registration_agent, RegistrationState
 
 app = FastAPI(
@@ -22,13 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory store for demonstration (in production, use Redis or PostgreSQL)[cite: 2]
 state_store: Dict[str, RegistrationState] = {}
-
-
-# ---------------------------------------------------------------------------
-# Request/Response Schemas
-# ---------------------------------------------------------------------------
 
 class ProspectInboundDTO(BaseModel):
     student_name: str = Field(..., example="Alexander Wright")
@@ -46,20 +39,11 @@ class PaymentWebhookDTO(BaseModel):
     payment_status: str = Field(..., example="COMPLETED")
     transaction_reference: str
 
-
-# ---------------------------------------------------------------------------
-# API Endpoints
-# ---------------------------------------------------------------------------
-
 @app.post("/api/v1/prospects/inbound", status_code=status.HTTP_202_ACCEPTED)
 async def ingest_prospect_webhook(
     payload: ProspectInboundDTO,
     background_tasks: BackgroundTasks
 ):
-    """
-    Stage 1 & 2: Ingests marketing leads, creates the prospect record, 
-    and triggers the AI Agent for entry verification.
-    """
     prospect_id = f"LEAD-{uuid.uuid4().hex[:6].upper()}"
     
     initial_state: RegistrationState = {
@@ -76,35 +60,29 @@ async def ingest_prospect_webhook(
         "student_id": None,
         "sis_sync_completed": False,
         "current_status": "PROSPECT_CONFIRMED",
-        "logs": [f"[Stage 1] Ingested lead {prospect_id} from Marketing Module[cite: 1, 2]."]
+        "logs": [f"[Stage 1] Ingested lead {prospect_id} from Marketing Module."]
     }
     
     state_store[prospect_id] = initial_state
 
-    # Execute qualification evaluation and offer dispatch in the background[cite: 1, 2]
     def run_evaluation_and_offer():
         current_state = state_store[prospect_id]
-        # Run Stages 1 -> 3a
         updated_state = registration_agent.invoke(current_state)
         state_store[prospect_id] = updated_state
 
     background_tasks.add_task(run_evaluation_and_offer)
     
     return {
-        "message": "Prospect ingested. Agent evaluation running in background[cite: 1, 2].",
+        "message": "Prospect ingested. Agent evaluation running in background.",
         "prospect_id": prospect_id,
         "status": "EVALUATION_IN_PROGRESS"
     }
-
 
 @app.post("/api/v1/admissions/{prospect_id}/offer-response")
 async def student_offer_response_webhook(
     prospect_id: str,
     payload: StudentOfferResponseDTO
 ):
-    """
-    Stage 3: Captures student acceptance/rejection from the offer portal[cite: 1, 2].
-    """
     if prospect_id not in state_store:
         raise HTTPException(status_code=404, detail="Prospect record not found")
         
@@ -113,44 +91,36 @@ async def student_offer_response_webhook(
     
     if payload.accepted:
         current_state["current_status"] = "OFFER_ACCEPTED"
-        current_state["logs"].append("[Stage 3] Student accepted the admission offer[cite: 1, 2].")
-        message = "Offer accepted. Please proceed to registration fee payment[cite: 1, 2]."
+        current_state["logs"].append("[Stage 3] Student accepted the admission offer.")
+        message = "Offer accepted. Please proceed to registration fee payment."
     else:
         current_state["current_status"] = "CLOSED"
-        current_state["logs"].append("[Stage 3] Student declined the admission offer. Process closed[cite: 1, 2].")
-        message = "Offer declined. Application marked as CLOSED[cite: 1, 2]."
+        current_state["logs"].append("[Stage 3] Student declined the admission offer. Process closed.")
+        message = "Offer declined. Application marked as CLOSED."
         
     state_store[prospect_id] = current_state
     return {"prospect_id": prospect_id, "status": current_state["current_status"], "message": message}
 
-
 @app.post("/api/v1/finance/webhooks/payment")
 async def finance_payment_webhook(
     payload: PaymentWebhookDTO,
-    background_tasks: BackgroundTasks,
-    x_signature: Optional[str] = Header(None)
+    background_tasks: BackgroundTasks
 ):
-    """
-    Stage 4 & 5: Receives finance webhook, triggers Student ID creation, 
-    and performs final SIS core database synchronization.
-    """
     prospect_id = payload.prospect_id
     if prospect_id not in state_store:
         raise HTTPException(status_code=404, detail="Prospect record not found")
         
     if payload.payment_status != "COMPLETED":
-        return {"message": "Payment not completed. No action taken[cite: 2]."}
+        return {"message": "Payment not completed. No action taken."}
 
     current_state = state_store[prospect_id]
     if current_state.get("current_status") != "OFFER_ACCEPTED":
-        raise HTTPException(status_code=400, detail="Student must accept offer prior to fee payment[cite: 1, 2]")
+        raise HTTPException(status_code=400, detail="Student must accept offer prior to fee payment")
 
-    # Update fee state
     current_state["registration_fee_paid"] = True
-    current_state["logs"].append(f"[Stage 4] Fee confirmed via TxRef: {payload.transaction_reference}[cite: 1, 2].")
+    current_state["logs"].append(f"[Stage 4] Fee confirmed via TxRef: {payload.transaction_reference}.")
     state_store[prospect_id] = current_state
 
-    # Trigger ID generation and SIS Sync asynchronously[cite: 1, 2, 7]
     def run_id_and_sis_sync():
         updated_state = registration_agent.invoke(state_store[prospect_id])
         state_store[prospect_id] = updated_state
@@ -158,16 +128,12 @@ async def finance_payment_webhook(
     background_tasks.add_task(run_id_and_sis_sync)
 
     return {
-        "message": "Payment verified. Generating Student ID and syncing with SIS[cite: 1, 2, 7].",
+        "message": "Payment verified. Generating Student ID and syncing with SIS.",
         "prospect_id": prospect_id
     }
 
-
 @app.get("/api/v1/students/{prospect_id}/status")
 async def get_registration_status(prospect_id: str):
-    """
-    Read-only status monitor for Registry UI / Dashboard overlays[cite: 5, 7].
-    """
     if prospect_id not in state_store:
         raise HTTPException(status_code=404, detail="Prospect record not found")
         
